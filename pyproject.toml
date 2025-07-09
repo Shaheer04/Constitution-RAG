@@ -10,7 +10,11 @@ dependencies = [
     "langchain-core",
     "langchain-text-splitters",
     "langchain-ollama",
-    "pymupdf",
     "chromadb",
     "langchain-chroma<=0.2.4",
+    "ollama>=0.5.1",
+    "python-dotenv>=1.1.1",
+    "docling>=2.39.0",
+    "pdfplumber>=0.11.7",
+    "sentence-transformers>=5.0.0",
 ]
