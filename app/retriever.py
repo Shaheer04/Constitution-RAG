@@ -1,15 +1,18 @@
 """
-Retriever Component with Hybrid Retrieval for Constitution RAG System
+Retriever Component with Reranker and Hybrid Retrieval for Constitution RAG System
 """
 
 from typing import List, Dict, Any, Optional
 import chromadb
 from sentence_transformers import SentenceTransformer
 import logging
-from collections import defaultdict, Counter
+from collections import Counter
 import re
 from dataclasses import dataclass
 from enum import Enum
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import torch
+from typing import List
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -189,6 +192,67 @@ class ChromaDBManager:
             logger.error(f"Error getting documents from ChromaDB: {e}")
             return None
 
+class LegalBERTReranker:
+    
+    def __init__(self, model_name: str = "nlpaueb/legal-bert-base-uncased"):
+        """
+        Initialize Legal BERT reranker
+        
+        Args:
+            model_name: Name of the legal BERT model for reranking
+        """
+        self.tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
+        self.model.eval()
+    
+    def rerank_results(self, query: str, results: List[RetrievalResult], 
+                      top_k: int = 10) -> List[RetrievalResult]:
+        """
+        Rerank retrieval results using Legal BERT model
+        
+        Args:
+            query: Search query
+            results: List of retrieval results to rerank
+            top_k: Number of top results to return
+            
+        Returns:
+            List of reranked results
+        """
+        if not results:
+            return []
+        
+        reranked_results = []
+        
+        for result in results:
+            # Create query-document pair
+            inputs = self.tokenizer(
+                query, 
+                result.text,
+                truncation=True,
+                padding=True,
+                max_length=512,
+                return_tensors="pt"
+            )
+            
+            # Get relevance score
+            with torch.no_grad():
+                outputs = self.model(**inputs)
+                # Use softmax to get probability scores
+                relevance_score = torch.softmax(outputs.logits, dim=-1)[0, 1].item()
+            
+            # Update result with reranker score
+            result.reranker_score = relevance_score
+            result.combined_score = (
+                0.6 * result.combined_score + 
+                0.4 * relevance_score
+            )
+            
+            reranked_results.append(result)
+        
+        # Sort by new combined score
+        reranked_results.sort(key=lambda x: x.combined_score, reverse=True)
+        
+        return reranked_results[:top_k]
 
 class Retriever:
     
@@ -205,6 +269,8 @@ class Retriever:
         self.embedding_model = SentenceTransformer(embedding_model_name)
         self.db_manager = ChromaDBManager(chroma_db_path)
         self.keyword_extractor = KeywordExtractor()
+        self.reranker = LegalBERTReranker()
+
         
     def _build_where_clause(self, filter_by_level: Optional[int], 
                            filter_by_type: Optional[str]) -> Dict:

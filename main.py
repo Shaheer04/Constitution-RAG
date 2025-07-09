@@ -134,18 +134,19 @@ class ConstitutionRAG:
         try:
             print(f"🔍 Searching for relevant information using hybrid search...")
             
-            # Always use hybrid retrieval
-            retrieval_results = self.retriever.hybrid_retrieve(question, n_results=n_results)
-            
-            if not retrieval_results:
+
+            results = self.retriever.hybrid_retrieve(question)
+            reranked_results = self.retriever.reranker.rerank_results(question, results, n_results)
+
+            if not reranked_results:
                 return "❌ No relevant information found in the constitution database."
-            
-            print(f"📚 Found {len(retrieval_results)} relevant documents")
+
+            print(f"📚 Found {len(reranked_results)} relevant documents")
             
             # Generate response
             print("🤖 Generating response...")
-            answer = self.generator.generate_response(question, retrieval_results)
-            
+            answer = self.generator.generate_response(question, reranked_results)
+
             return answer
             
         except Exception as e:
@@ -229,7 +230,7 @@ def main():
     DB_PATH = "./constitution_db"
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     OLLAMA_MODEL = "qwen3" 
-    OLLAMA_URL = "https://356e2f6fc9a3.ngrok-free.app/"  
+    OLLAMA_URL = "https://cbf1332f1987.ngrok-free.app/"  
     
     print("🚀 Starting Constitution RAG System...")
     
