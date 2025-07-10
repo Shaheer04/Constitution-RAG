@@ -10,6 +10,7 @@ import chromadb
 from sentence_transformers import SentenceTransformer
 import ollama
 from collections import Counter
+import hashlib
 
 
 class PreProcessor:
@@ -68,9 +69,9 @@ class PreProcessor:
         
         return result.document
 
-    def create_hybrid_chunks(self, document, max_tokens: int = 1000, overlap_ratio: float = 0.1) -> List[Dict]:
+    def create_hybrid_chunks_with_citations(self, document, max_tokens: int = 1000, overlap_ratio: float = 0.1) -> List[Dict]:
         """
-        Create hybrid chunks from document using Docling's HybridChunker
+        Create hybrid chunks from document using Docling's HybridChunker with citation metadata
         
         Args:
             document: Docling Document object
@@ -78,14 +79,23 @@ class PreProcessor:
             overlap_ratio: Overlap ratio between chunks
             
         Returns:
-            List of chunk dictionaries with hierarchical information
+            List of chunk dictionaries with hierarchical information and citation metadata
         """
         # Use Docling's hybrid chunker
         chunks = self.chunker.chunk(document, tokenizer=None, max_tokens=max_tokens, overlap_ratio=overlap_ratio)
         
-        # Convert to our format with enhanced metadata
+        # Convert to our format with enhanced metadata including citations
         processed_chunks = []
         for i, chunk in enumerate(chunks):
+            
+            # Get basic information
+            page_number = self._get_page_number(chunk)
+            heading = self._get_chunk_heading(chunk)
+            
+            # Generate citation metadata
+            paragraph_id = self._generate_paragraph_id(chunk.text, page_number, i)
+            citation_text = self._create_citation_text(chunk.text, page_number, heading)
+            paragraph_preview = self._create_paragraph_preview(chunk.text)
             
             chunk_dict = {
                 'id': str(uuid.uuid4()),
@@ -93,10 +103,17 @@ class PreProcessor:
                 'chunk_id': i,
                 'doc_items': [item.__dict__ if hasattr(item, '__dict__') else str(item) for item in chunk.doc_items] if hasattr(chunk, 'doc_items') and chunk.doc_items else [],
                 'level': self._get_chunk_level(chunk),
-                'heading': self._get_chunk_heading(chunk),
-                'page_number': self._get_page_number(chunk),
+                'heading': heading,
+                'page_number': page_number,
                 'element_type': self._get_element_type(chunk),
-                'length': len(chunk.text)
+                'length': len(chunk.text),
+                
+                # Citation-specific metadata
+                'paragraph_id': paragraph_id,
+                'citation_text': citation_text,
+                'paragraph_preview': paragraph_preview,
+                'section_info': self._get_section_info(chunk),
+                'content_type': self._get_detailed_content_type(chunk)
             }
             processed_chunks.append(chunk_dict)
         
@@ -143,12 +160,84 @@ class PreProcessor:
             return ', '.join(set(types)) if types else 'text'
         return 'text'
 
+    def _generate_paragraph_id(self, text: str, page_number: int, chunk_index: int) -> str:
+        """Generate unique paragraph ID using text content"""
+        # Create hash from text content for uniqueness
+        content_hash = hashlib.md5(text.encode()).hexdigest()[:8]
+        return f"p{page_number}_{chunk_index}_{content_hash}"
+
+    def _create_citation_text(self, text: str, page_number: int, heading: str = "") -> str:
+        """Create citation text for the chunk"""
+        # Get first 150 characters as preview
+        preview = text[:150].strip()
+        if len(text) > 150:
+            preview += "..."
+        
+        # Include heading if available
+        if heading:
+            return f"Page {page_number}, Section '{heading}': \"{preview}\""
+        else:
+            return f"Page {page_number}: \"{preview}\""
+
+    def _create_paragraph_preview(self, text: str) -> str:
+        """Create a longer preview of the paragraph for context"""
+        preview = text[:300].strip()
+        if len(text) > 300:
+            preview += "..."
+        return preview
+
+    def _get_section_info(self, chunk) -> Dict:
+        """Get detailed section information from Docling chunk"""
+        section_info = {
+            'section_title': '',
+            'section_number': '',
+            'parent_section': '',
+            'section_level': 0
+        }
+        
+        if hasattr(chunk, 'doc_items') and chunk.doc_items:
+            for item in chunk.doc_items:
+                if hasattr(item, 'label') and item.label:
+                    if item.label.startswith('#'):
+                        # Extract section information from heading
+                        heading_text = item.label.replace('#', '').strip()
+                        section_info['section_title'] = heading_text
+                        section_info['section_level'] = len(item.label.split('#')[0])
+                        
+                        # Try to extract section number if present
+                        import re
+                        section_match = re.search(r'^(\d+\.?\d*)', heading_text)
+                        if section_match:
+                            section_info['section_number'] = section_match.group(1)
+        
+        return section_info
+
+    def _get_detailed_content_type(self, chunk) -> str:
+        """Get detailed content type for better citation context"""
+        content_types = []
+        
+        if hasattr(chunk, 'doc_items') and chunk.doc_items:
+            for item in chunk.doc_items:
+                if hasattr(item, 'label') and item.label:
+                    if item.label.startswith('#'):
+                        content_types.append('heading')
+                    elif 'table' in item.label.lower():
+                        content_types.append('table')
+                    elif 'figure' in item.label.lower():
+                        content_types.append('figure')
+                    elif 'list' in item.label.lower():
+                        content_types.append('list')
+                    else:
+                        content_types.append('paragraph')
+        
+        return ', '.join(set(content_types)) if content_types else 'paragraph'
+
     def embed_and_store(self, chunks: List[Dict], document_name: str = "document"):
         """
-        Create embeddings and store in ChromaDB with hierarchical metadata
+        Create embeddings and store in ChromaDB with hierarchical metadata and citations
         
         Args:
-            chunks: List of hierarchical chunks
+            chunks: List of hierarchical chunks with citation metadata
             document_name: Name of the source document
         """
         # Extract texts for embedding
@@ -157,7 +246,7 @@ class PreProcessor:
         # Create embeddings
         embeddings = self.embedding_model.encode(texts, show_progress_bar=False)
         
-        # Prepare data for ChromaDB with hierarchical metadata
+        # Prepare data for ChromaDB with hierarchical metadata and citations
         ids = [chunk['id'] for chunk in chunks]
         metadatas = [
             {
@@ -167,7 +256,16 @@ class PreProcessor:
                 'heading': str(chunk['heading']) if chunk['heading'] else "",
                 'page_number': int(chunk['page_number']) if chunk['page_number'] is not None else 0,
                 'element_type': str(chunk['element_type']),
-                'length': int(chunk['length'])
+                'length': int(chunk['length']),
+                
+                # Citation metadata
+                'paragraph_id': str(chunk['paragraph_id']),
+                'citation_text': str(chunk['citation_text']),
+                'paragraph_preview': str(chunk['paragraph_preview']),
+                'section_title': str(chunk['section_info']['section_title']),
+                'section_number': str(chunk['section_info']['section_number']),
+                'section_level': int(chunk['section_info']['section_level']),
+                'content_type': str(chunk['content_type'])
             }
             for chunk in chunks
         ]
@@ -180,6 +278,7 @@ class PreProcessor:
                 metadatas=metadatas,
                 ids=ids
             )
+            print(f"✅ Stored {len(chunks)} chunks with citation metadata")
         except Exception as e:
             print(f"Error storing chunks in ChromaDB: {e}")
             raise

@@ -8,6 +8,7 @@ from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 import logging
 import time
+from .citation_generator import CitationLinkGenerator
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -18,7 +19,9 @@ class Generator:
     def __init__(self, 
                  ollama_model: str = "qwen3",
                  ollama_url: str = None,
-                 temperature: float = 0.3):
+                 temperature: float = 0.3,
+                 pdf_path: str = None,
+                 base_url: str = ""):
         """
         Initialize the Response Generator
         
@@ -26,6 +29,8 @@ class Generator:
             ollama_model: Ollama model name for generation
             ollama_url: URL for remote Ollama instance (optional)
             temperature: Model temperature for response generation
+            pdf_path: Path to the constitution PDF for citations
+            base_url: Base URL for PDF links (optional)
         """
         self.ollama_model = ollama_model
         self.temperature = temperature
@@ -42,6 +47,11 @@ class Generator:
                 model=ollama_model,
                 temperature=temperature
             )
+        
+        # Initialize citation generator if PDF path provided
+        self.citation_generator = None
+        if pdf_path:
+            self.citation_generator = CitationLinkGenerator(pdf_path, base_url)
         
         # Create prompt template
         self.prompt_template = self._create_prompt_template()
@@ -90,7 +100,7 @@ class Generator:
             retrieval_results: List of RetrievalResult objects from retriever
             
         Returns:
-            Generated answer string
+            Generated answer string with citations
         """
         try:
             if not retrieval_results:
@@ -106,11 +116,52 @@ class Generator:
                 "question": query
             })
             
+            # Add citations if citation generator is available
+            if self.citation_generator:
+                response_with_citations = self._add_citations(response, retrieval_results)
+                return response_with_citations
+            
             return response.strip()
             
         except Exception as e:
             logger.error(f"Error generating response: {str(e)}")
-            return 
+            return "I apologize, but I encountered an error while generating the response. Please try again."
+    
+    def _add_citations(self, response: str, retrieval_results: List) -> str:
+        """
+        Add citations to the response
+        
+        Args:
+            response: Generated response text
+            retrieval_results: List of RetrievalResult objects
+            
+        Returns:
+            Response with citations appended
+        """
+        citations = []
+        
+        for i, result in enumerate(retrieval_results):
+            citation_info = {
+                'page_number': getattr(result, 'page_number', 1),
+                'paragraph_id': getattr(result, 'paragraph_id', f'para_{i+1}'),
+                'citation_text': result.text[:100] + "..." if len(result.text) > 100 else result.text,
+                'citation_number': i + 1,
+                'section_title': getattr(result, 'heading', ''),
+                'section_number': getattr(result, 'section_number', ''),
+                'content_type': getattr(result, 'content_type', 'paragraph')
+            }
+            
+            # Generate markdown citation
+            citation = self.citation_generator.generate_markdown_citation_enhanced(citation_info)
+            citations.append(citation)
+        
+        # Append citations to response
+        response_with_citations = response.strip()
+        if citations:
+            response_with_citations += "\n\n**Sources:**\n\n"
+            response_with_citations += "\n\n".join(citations)
+        
+        return response_with_citations
     
     def _prepare_context(self, retrieval_results: List) -> str:
         """

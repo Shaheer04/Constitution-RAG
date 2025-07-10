@@ -54,7 +54,8 @@ class ConstitutionRAG:
             )
             self.generator = Generator(
                 ollama_model=ollama_model,
-                ollama_url=ollama_url
+                ollama_url=ollama_url,
+                pdf_path=pdf_path,
             )
             print("✅ All components initialized successfully!")
         except Exception as e:
@@ -76,7 +77,7 @@ class ConstitutionRAG:
             
             # Step 2: Create hybrid chunks
             print("🔧 Creating hybrid chunks...")
-            chunks = self.preprocessor.create_hybrid_chunks(document, max_tokens=1000, overlap_ratio=0.1)
+            chunks = self.preprocessor.create_hybrid_chunks_with_citations(document, max_tokens=1000, overlap_ratio=0.1)
             print(f"📊 Created {len(chunks)} chunks")
             
             # Step 3: Embed and store
@@ -230,7 +231,7 @@ def main():
     DB_PATH = "./constitution_db"
     EMBEDDING_MODEL = "all-MiniLM-L6-v2"
     OLLAMA_MODEL = "qwen3" 
-    OLLAMA_URL = "https://cbf1332f1987.ngrok-free.app/"  
+    OLLAMA_URL = "https://e1d4c021133d.ngrok-free.app/"  
     
     print("🚀 Starting Constitution RAG System...")
     

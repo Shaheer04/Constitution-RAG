@@ -17,4 +17,5 @@ dependencies = [
     "docling>=2.39.0",
     "pdfplumber>=0.11.7",
     "sentence-transformers>=5.0.0",
+    "streamlit>=1.46.1",
 ]
