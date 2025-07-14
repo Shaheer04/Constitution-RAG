@@ -299,7 +299,7 @@ class Retriever:
                 hierarchical_path=metadata.get('hierarchical_path', 'root'),
                 level=metadata.get('level', 0),
                 heading=metadata.get('heading', ''),
-                page_number=metadata.get('page_number', 0),
+                page_number=max(1, metadata.get('page_number', 1)),  # Ensure page_number is positive and accurate
                 element_type=metadata.get('element_type', 'text')
             )
             formatted_results.append(result)
@@ -394,7 +394,7 @@ class Retriever:
                     hierarchical_path=metadata.get('hierarchical_path', 'root'),
                     level=metadata.get('level', 0),
                     heading=metadata.get('heading', ''),
-                    page_number=metadata.get('page_number', 0),
+                    page_number=max(1, metadata.get('page_number', 1)), # Ensure page_number is positive and accurate
                     element_type=metadata.get('element_type', 'text')
                 )
                 keyword_matches.append(result)

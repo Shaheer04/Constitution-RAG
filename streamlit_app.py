@@ -1,6 +1,6 @@
 """
-Streamlit-only Constitution RAG System
-Integrates everything directly without separate backend
+Simple RAG System with Local PDF References
+Adds clickable hyperlinks that open local PDF files at specific pages
 """
 
 import streamlit as st
@@ -9,6 +9,9 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Any
 import uuid
+import re
+from pathlib import Path
+import urllib.parse
 
 # LangChain imports for conversation memory
 from langchain.memory import ConversationBufferWindowMemory
@@ -30,7 +33,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Custom CSS
+# Custom CSS for references
 st.markdown("""
 <style>
 .main {
@@ -43,12 +46,37 @@ st.markdown("""
     margin: 0.5rem 0;
 }
 
-.source-box {
-    background-color: #f5f5f5;
-    padding: 1rem;
+.pdf-reference {
+    display: inline-block;
+    background-color: #e3f2fd;
+    color: #1976d2;
+    padding: 6px 12px;
+    margin: 4px;
+    border-radius: 5px;
+    text-decoration: none;
+    border: 1px solid #1976d2;
+    font-size: 0.9em;
+    font-weight: 500;
+}
+
+.pdf-reference:hover {
+    background-color: #bbdefb;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+}
+
+.references-section {
+    margin-top: 15px;
+    padding: 12px;
+    background-color: #f8f9fa;
     border-radius: 8px;
-    margin: 0.5rem 0;
-    border-left: 4px solid #ff9800;
+    border-left: 4px solid #28a745;
+}
+
+.references-title {
+    font-weight: bold;
+    margin-bottom: 8px;
+    color: #2c3e50;
 }
 
 .metric-card {
@@ -88,7 +116,7 @@ class ConstitutionRAGApp:
         
         if 'conversation_memory' not in st.session_state:
             st.session_state.conversation_memory = ConversationBufferWindowMemory(
-                k=10,  # Keep last 10 exchanges
+                k=10,
                 return_messages=True
             )
         
@@ -107,6 +135,7 @@ class ConstitutionRAGApp:
         if 'current_sources' not in st.session_state:
             st.session_state.current_sources = []
     
+
     @st.cache_resource
     def load_rag_system(_self):
         """Load RAG system (cached to avoid reloading)"""
@@ -118,7 +147,7 @@ class ConstitutionRAGApp:
             db_path = "./constitution_db"
             embedding_model = "all-MiniLM-L6-v2"
             ollama_model = "qwen3"
-            ollama_url = "https://e1d4c021133d.ngrok-free.app/"
+            ollama_url = "https://336919e73f7d.ngrok-free.app/"
             
             # Initialize components
             preprocessor = PreProcessor(
@@ -295,29 +324,19 @@ class ConstitutionRAGApp:
             # Retrieve relevant documents
             results = retriever.hybrid_retrieve(question)
             reranked_results = retriever.reranker.rerank_results(question, results, n_results)
-            
+            print(reranked_results)
             if not reranked_results:
                 return {
                     "answer": "No relevant information found in the constitution database.",
                     "sources": []
                 }
             
-            # Generate response (this will now include citations!)
+            # Generate response
             answer = generator.generate_response(question, reranked_results)
-            
-            # Format sources - Fix the attribute access here
-            sources = []
-            for i, result in enumerate(reranked_results):
-                sources.append({
-                    "id": i + 1,
-                    "text": result.text[:300] + "..." if len(result.text) > 300 else result.text,  # Use .text instead of .get("text")
-                    "metadata": getattr(result, 'metadata', {}),  # Use getattr for safety
-                    "score": getattr(result, 'score', 0.0)  # Use getattr for safety
-                })
             
             return {
                 "answer": answer,
-                "sources": sources
+                "sources": reranked_results
             }
             
         except Exception as e:
@@ -368,68 +387,46 @@ class ConstitutionRAGApp:
         n_results = st.sidebar.slider("📊 Source documents", 1, 10, 5, help="Number of sources to retrieve")
         st.session_state.n_results = n_results
         
-        # Database management (collapsed by default)
-        with st.sidebar.expander("🗄️ Database Management"):
-            if st.button("🔄 Rebuild Database", help="Rebuild document database"):
-                with st.spinner("Rebuilding database..."):
-                    if self.setup_database():
-                        st.success("Database rebuilt!")
-                    else:
-                        st.error("Rebuild failed!")
-
-    def display_sources(self, sources: List[Dict]):
-        """Display source documents"""
-        if not sources:
-            return
-        
-        with st.expander(f"📚 Source Documents ({len(sources)})", expanded=False):
-            for source in sources:
-                st.markdown(f"""
-                <div class="source-box">
-                    <strong>📄 Source {source['id']} (Relevance: {source['score']:.3f})</strong><br>
-                    <p>{source['text']}</p>
-                    <small><em>Metadata: {source.get('metadata', {})}</em></small>
-                </div>
-                """, unsafe_allow_html=True)
-    
-    def display_chat_stats(self):
-        """Display chat statistics"""
-        if st.session_state.messages:
-            total_messages = len(st.session_state.messages)
-            user_messages = len([m for m in st.session_state.messages if m["role"] == "user"])
-            assistant_messages = len([m for m in st.session_state.messages if m["role"] == "assistant"])
-            
-            st.markdown(f"""
-            <div class="chat-stats">
-                <h4>📊 Chat Statistics</h4>
-                <p><strong>Total Messages:</strong> {total_messages}</p>
-                <p><strong>Your Questions:</strong> {user_messages}</p>
-                <p><strong>AI Responses:</strong> {assistant_messages}</p>
-                <p><strong>Session Duration:</strong> {datetime.now().strftime('%H:%M:%S')}</p>
-            </div>
-            """, unsafe_allow_html=True)
+        # PDF info
+        rag_system = st.session_state.rag_system
+        if rag_system:
+            pdf_path = rag_system['pdf_path']
+            if os.path.exists(pdf_path):
+                st.sidebar.success(f"📄 PDF: {os.path.basename(pdf_path)}")
+            else:
+                st.sidebar.error(f"📄 PDF not found: {pdf_path}")
     
     def display_main_interface(self):
         """Display main chat interface"""
         st.title("🏛️ Constitution of Pakistan RAG Chatbot")
-        st.markdown("Ask questions about the Constitution of Pakistan. This chatbot uses advanced retrieval and generation to provide accurate answers.")
-        
-        # Display chat statistics
-        if st.session_state.messages:
-            self.display_chat_stats()
+        st.markdown("Ask questions about the Constitution of Pakistan. Click on page references to open the PDF.")
         
         # Display conversation
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
-                st.markdown(message["content"])
-                
-                # Show sources for assistant messages
-                if message["role"] == "assistant" and "sources" in message:
-                    self.display_sources(message["sources"])
+                st.markdown(message["content"], unsafe_allow_html=True)
         
         # Chat input
         if prompt := st.chat_input("Ask a question about the Constitution of Pakistan..."):
             self.process_user_input(prompt)
+    
+    def start_new_conversation(self):
+        """Start a new conversation"""
+        st.session_state.messages = []
+        st.session_state.current_sources = []
+        st.session_state.conversation_memory.clear()
+        st.rerun()
+    
+    def clear_conversation(self):
+        """Clear current conversation"""
+        st.session_state.messages = []
+        st.session_state.current_sources = []
+        st.session_state.conversation_memory.clear()
+        st.rerun()
+    
+    def load_conversation_history(self):
+        """Load conversation history (placeholder)"""
+        pass
     
     def process_user_input(self, user_input: str):
         """Process user input and generate response"""
@@ -440,9 +437,6 @@ class ConstitutionRAGApp:
             "timestamp": datetime.now()
         })
         
-        # Add to LangChain memory
-        st.session_state.conversation_memory.chat_memory.add_user_message(user_input)
-        
         # Display user message
         with st.chat_message("user"):
             st.markdown(user_input)
@@ -451,6 +445,8 @@ class ConstitutionRAGApp:
         with st.chat_message("assistant"):
             # Show thinking indicator
             with st.spinner("🤔 Thinking..."):
+                # Add to LangChain memory
+                st.session_state.conversation_memory.chat_memory.add_user_message(user_input)
                 n_results = getattr(st.session_state, 'n_results', 5)
                 response = self.ask_question(user_input, n_results)
             
@@ -466,21 +462,25 @@ class ConstitutionRAGApp:
                 })
                 return
             
-            # Display answer
+            # Display answer with clickable PDF page references
             answer = response.get("answer", "No answer received")
-            st.markdown(answer)
-            
-            # Display sources
             sources = response.get("sources", [])
-            if sources:
-                self.display_sources(sources)
-                st.session_state.current_sources = sources
-            
+            pdf_path = st.session_state.rag_system['pdf_path']
+            generator = st.session_state.rag_system['generator']
+
+            # Collect page numbers from sources
+            page_numbers = [s.page_number for s in sources if hasattr(s, "page_number")]
+
+            # Add clickable references using the generator's method
+            answer_with_refs = generator._add_citations_optimized(
+                answer, sources, pdf_path, page_numbers
+            )
+            st.markdown(answer_with_refs, unsafe_allow_html=True)
+
             # Add to messages
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": answer,
-                "sources": sources,
                 "timestamp": datetime.now()
             })
             
@@ -506,3 +506,8 @@ class ConstitutionRAGApp:
         
         # Main interface
         self.display_main_interface()
+
+# Run the application
+if __name__ == "__main__":
+    app = ConstitutionRAGApp()
+    app.run()
