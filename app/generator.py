@@ -14,8 +14,7 @@ from langchain_ollama import OllamaLLM
 from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 import requests
-from requests.exceptions import RequestException, Timeout, ConnectionError
-from .citation_generator import CitationLinkGenerator
+from requests.exceptions import ConnectionError
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -474,9 +473,6 @@ class Generator:
                     success=True, response_time=response_time, cache_hit=True
                 )
                 return cached_response
-            
-            # Validate connection before making request
-            self._validate_connection()
             
             # Generate response using LangChain with retry mechanism
             logger.info("Generating response using language model...")

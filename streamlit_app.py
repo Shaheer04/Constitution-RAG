@@ -20,6 +20,7 @@ from langchain.memory import ConversationBufferWindowMemory
 from app.pre_processor import PreProcessor
 from app.retriever import Retriever
 from app.generator import Generator
+from app.query_rewriter import QueryRewriter
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -147,7 +148,8 @@ class ConstitutionRAGApp:
             db_path = "./constitution_db"
             embedding_model = "all-MiniLM-L6-v2"
             ollama_model = "qwen3"
-            ollama_url = "https://06566434fd2b.ngrok-free.app/"
+            ollama_url = "https://1f26299189c7.ngrok-free.app/"
+            
             
             # Initialize components
             preprocessor = PreProcessor(
@@ -169,12 +171,15 @@ class ConstitutionRAGApp:
                 base_url=""         
             )
             
+            query_rewriter = QueryRewriter(ollama_url, ollama_model)
+            
             return {
                 'preprocessor': preprocessor,
                 'retriever': retriever,
                 'generator': generator,
                 'pdf_path': pdf_path,
-                'db_path': db_path
+                'db_path': db_path,
+                'query_rewriter': query_rewriter
             }
             
         except Exception as e:
@@ -320,11 +325,15 @@ class ConstitutionRAGApp:
             
             retriever = rag_system['retriever']
             generator = rag_system['generator']
+            query_rewriter = rag_system['query_rewriter']
+            
+            # Query rewriting step (raises error if fails)
+            rewritten_question = query_rewriter.rewrite(question)
             
             # Retrieve relevant documents
-            results = retriever.hybrid_retrieve(question)
-            reranked_results = retriever.reranker.rerank_results(question, results, n_results)
-            print(reranked_results)
+            results = retriever.hybrid_retrieve(rewritten_question)
+            reranked_results = retriever.reranker.rerank_results(rewritten_question, results, n_results)
+
             if not reranked_results:
                 return {
                     "answer": "No relevant information found in the constitution database.",
@@ -332,7 +341,7 @@ class ConstitutionRAGApp:
                 }
             
             # Generate response
-            answer = generator.generate_response(question, reranked_results)
+            answer = generator.generate_response(rewritten_question, reranked_results)
             
             return {
                 "answer": answer,
@@ -445,9 +454,7 @@ class ConstitutionRAGApp:
         
         # Generate response
         with st.chat_message("assistant"):
-            # Show thinking indicator
             with st.spinner("🤔 Thinking..."):
-                # Add to LangChain memory
                 st.session_state.conversation_memory.chat_memory.add_user_message(user_input)
                 n_results = getattr(st.session_state, 'n_results', 5)
                 response = self.ask_question(user_input, n_results)
@@ -455,8 +462,6 @@ class ConstitutionRAGApp:
             if "error" in response:
                 error_msg = f"❌ Error: {response['error']}"
                 st.markdown(error_msg)
-                
-                # Add error to messages
                 st.session_state.messages.append({
                     "role": "assistant",
                     "content": error_msg,
@@ -470,30 +475,25 @@ class ConstitutionRAGApp:
             pdf_path = st.session_state.rag_system['pdf_path']
             generator = st.session_state.rag_system['generator']
 
-            # Collect page numbers from sources
-            page_numbers = [s.page_number for s in sources if hasattr(s, "page_number")]
+            # --- Remove unwanted tags like <think> ---
+            answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
 
-            # Add clickable references using the generator's method
+            page_numbers = [s.page_number for s in sources if hasattr(s, "page_number")]
             answer_with_refs = generator._add_citations_optimized(
                 answer, sources, pdf_path, page_numbers
             )
 
-            # Stream the answer and references
             def stream_answer_with_refs(answer):
                 for line in answer.split('\n'):
                     yield line + '\n'
 
-            # references_html = answer_with_refs[len(answer):]
             st.write_stream(stream_answer_with_refs(answer))
 
-            # Add to messages (store HTML with references)
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": answer_with_refs,
                 "timestamp": datetime.now()
             })
-            
-            # Add to LangChain memory
             st.session_state.conversation_memory.chat_memory.add_ai_message(answer)
     
     def run(self):
