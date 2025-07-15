@@ -13,9 +13,12 @@ class QueryRewriter:
         prompt = (
             "Rewrite the following question to be as clear, specific, and concise as possible, "
             "optimizing it for retrieval from a constitutional database. "
-            "Do not change the meaning, but resolve ambiguity and add missing context if needed.\n\n"
+            "Do not change the meaning, but resolve ambiguity and add missing context if needed."
+            "Assume the question is about Pakistan's 1973 Constitution unless it is clearly not."
+            "If the question mentions an article number (e.g., Article 63), treat it as referring to Pakistan's Constitution.\n\n"
             f"Original question: {query}\n\nRewritten:"
         )
+        
         response = requests.post(
             f"{self.ollama_url}/api/generate",
             json={

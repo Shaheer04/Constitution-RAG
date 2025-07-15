@@ -102,6 +102,14 @@ st.markdown("""
     border-radius: 8px;
     margin: 1rem 0;
 }
+
+h1 {
+    color: #fff; /* or another color that stands out on dark background */
+    font-size: 2.5rem;
+    font-weight: bold;
+    margin-bottom: 1rem;
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -192,15 +200,18 @@ class ConstitutionRAGApp:
         if not st.session_state.system_initialized:
             with st.spinner("🔧 Initializing RAG system..."):
                 rag_components = self.load_rag_system()
-                
                 if rag_components:
                     st.session_state.rag_system = rag_components
                     st.session_state.system_initialized = True
-                    
-                    # Check if database needs setup
-                    if self.needs_database_setup():
+
+                    # Add this check
+                    if 'db_setup_complete' not in st.session_state:
+                        st.session_state.db_setup_complete = False
+
+                    if self.needs_database_setup() and not st.session_state.db_setup_complete:
                         st.warning("Database is empty. Setting up database...")
                         self.setup_database()
+                        st.session_state.db_setup_complete = True
                 else:
                     st.error("Failed to initialize RAG system")
                     st.stop()
@@ -331,8 +342,10 @@ class ConstitutionRAGApp:
             rewritten_question = query_rewriter.rewrite(question)
             
             # Retrieve relevant documents
-            results = retriever.hybrid_retrieve(rewritten_question)
-            reranked_results = retriever.reranker.rerank_results(rewritten_question, results, n_results)
+            reranked_results = retriever.hybrid_retrieve(
+                query=rewritten_question,
+                n_results=n_results
+            )
 
             if not reranked_results:
                 return {
@@ -342,7 +355,7 @@ class ConstitutionRAGApp:
             
             # Generate response
             answer = generator.generate_response(rewritten_question, reranked_results)
-            
+
             return {
                 "answer": answer,
                 "sources": reranked_results
@@ -407,14 +420,15 @@ class ConstitutionRAGApp:
     
     def display_main_interface(self):
         """Display main chat interface"""
+        
         st.title("🏛️ Constitution of Pakistan RAG Chatbot")
-        st.markdown("Ask questions about the Constitution of Pakistan. Click on page references to open the PDF.")
+        st.markdown("---")  
         
         # Display conversation
         for message in st.session_state.messages:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"], unsafe_allow_html=True)
-        
+
         # Chat input
         if prompt := st.chat_input("Ask a question about the Constitution of Pakistan..."):
             self.process_user_input(prompt)
@@ -491,7 +505,7 @@ class ConstitutionRAGApp:
 
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": answer_with_refs,
+                "content": answer,
                 "timestamp": datetime.now()
             })
             st.session_state.conversation_memory.chat_memory.add_ai_message(answer)
