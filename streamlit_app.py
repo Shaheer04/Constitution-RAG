@@ -147,7 +147,7 @@ class ConstitutionRAGApp:
             db_path = "./constitution_db"
             embedding_model = "all-MiniLM-L6-v2"
             ollama_model = "qwen3"
-            ollama_url = "https://336919e73f7d.ngrok-free.app/"
+            ollama_url = "https://06566434fd2b.ngrok-free.app/"
             
             # Initialize components
             preprocessor = PreProcessor(
@@ -428,6 +428,7 @@ class ConstitutionRAGApp:
         """Load conversation history (placeholder)"""
         pass
     
+    @st.fragment
     def process_user_input(self, user_input: str):
         """Process user input and generate response"""
         # Add user message
@@ -440,6 +441,7 @@ class ConstitutionRAGApp:
         # Display user message
         with st.chat_message("user"):
             st.markdown(user_input)
+
         
         # Generate response
         with st.chat_message("assistant"):
@@ -475,12 +477,19 @@ class ConstitutionRAGApp:
             answer_with_refs = generator._add_citations_optimized(
                 answer, sources, pdf_path, page_numbers
             )
-            st.markdown(answer_with_refs, unsafe_allow_html=True)
 
-            # Add to messages
+            # Stream the answer and references
+            def stream_answer_with_refs(answer):
+                for line in answer.split('\n'):
+                    yield line + '\n'
+
+            # references_html = answer_with_refs[len(answer):]
+            st.write_stream(stream_answer_with_refs(answer))
+
+            # Add to messages (store HTML with references)
             st.session_state.messages.append({
                 "role": "assistant",
-                "content": answer,
+                "content": answer_with_refs,
                 "timestamp": datetime.now()
             })
             
