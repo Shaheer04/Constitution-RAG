@@ -368,27 +368,6 @@ class ConstitutionRAGApp:
             logger.error(f"Error processing question: {e}")
             return {"error": str(e)}
     
-    def display_system_status(self):
-        """Display system status in sidebar"""
-        st.sidebar.markdown("## 🔧 System Status")
-        
-        # Get health status
-        health = self.test_system_health()
-        
-        # Display overall status
-        if health["overall"]:
-            st.sidebar.success("✅ System Healthy")
-        else:
-            st.sidebar.error("❌ System Issues")
-        
-        # Display errors if any (only if there are issues)
-        if health["errors"]:
-            with st.sidebar.expander("⚠️ Issues"):
-                for error in health["errors"]:
-                    st.error(error)
-        
-        return health["overall"]
-    
     def display_conversation_controls(self):
         """Display minimal conversation controls"""
         st.sidebar.markdown("## 💬 Chat Controls")
@@ -520,12 +499,6 @@ class ConstitutionRAGApp:
         if 'history_loaded' not in st.session_state:
             self.load_conversation_history()
             st.session_state.history_loaded = True
-        
-        # Check system health
-        is_healthy = self.display_system_status()
-        
-        if not is_healthy:
-            st.error("⚠️ System has issues. Some features may not work properly.")
         
         # Display minimal controls
         self.display_conversation_controls()
