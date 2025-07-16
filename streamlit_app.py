@@ -155,8 +155,8 @@ class ConstitutionRAGApp:
             pdf_path = "./data/constitution-1973.pdf"
             db_path = "./constitution_db"
             embedding_model = "all-MiniLM-L6-v2"
-            ollama_model = "qwen3"
-            ollama_url = "https://1f26299189c7.ngrok-free.app/"
+            ollama_model = "llama3.2"
+            ollama_url = "https://d6bf24c44f53.ngrok-free.app/"
             
             
             # Initialize components
@@ -339,10 +339,12 @@ class ConstitutionRAGApp:
             query_rewriter = rag_system['query_rewriter']
             
             # Query rewriting step (raises error if fails)
+            print(f"Rewriting question")
             rewritten_question = query_rewriter.rewrite(question)
             
             # Retrieve relevant documents
-            reranked_results = retriever.hybrid_retrieve(
+            print(f"Retrieving documents for question: {rewritten_question}")
+            reranked_results = retriever.adaptive_hybrid_retrieve(
                 query=rewritten_question,
                 n_results=n_results
             )
@@ -354,6 +356,7 @@ class ConstitutionRAGApp:
                 }
             
             # Generate response
+            print(f"Generating response for question")
             answer = generator.generate_response(rewritten_question, reranked_results)
 
             return {
@@ -471,6 +474,7 @@ class ConstitutionRAGApp:
             with st.spinner("🤔 Thinking..."):
                 st.session_state.conversation_memory.chat_memory.add_user_message(user_input)
                 n_results = getattr(st.session_state, 'n_results', 5)
+                print("calling ask question")
                 response = self.ask_question(user_input, n_results)
             
             if "error" in response:

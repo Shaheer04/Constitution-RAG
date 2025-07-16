@@ -20,4 +20,5 @@ dependencies = [
     "streamlit>=1.46.1",
     "rank-bm25>=0.2.2",
     "flashrank>=0.2.10",
+    "nltk>=3.9.1",
 ]

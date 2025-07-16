@@ -267,29 +267,26 @@ class Generator:
 
     def _create_prompt_template(self) -> PromptTemplate:
         """Create a prompt template for the RAG system"""
-        template = """ You are a legal assistant for Pakistan's Constitution. Answer using ONLY the provided context.
-    
-    CONTEXT: {context}
-    QUESTION: {question}
-    
-    RULES:
-    - Use ONLY information from the context - no external knowledge
-    - Quote exact Articles, chapters, and sections with citations
-    - Use quotation marks for direct text excerpts
-    - If information is missing, state: "Context insufficient for [specific aspect]"
-    - For partial answers, specify what's available vs. missing
-    - Maintain exact constitutional language and formatting
-    - Structure multi-part answers with clear numbering
-    - If question is not related to Pakistan's 1973 Constitution, respond: "This question is outside my domain. I only answer questions about Pakistan's 1973 Constitution."
-    - Do not include any thinking process or reasoning in your response
-    - Only provide the final answer with citations inline.
+        template = """You are a legal expert on the 1973 Constitution of Pakistan. Use the provided context to answer the question.
 
-    RESPONSE: [Answer here following above rules]
-    """
+        CONTEXT: {context}
+        QUESTION: {question}
+
+        INSTRUCTIONS:
+        1.  **Answer accurately,** using ONLY the provided context. Do not use external knowledge. Your answer should provide the relevant information based on the context, citing articles where appropriate.
+        2.  **Cite relevant Articles, sections, and clauses** to support your answer. Use the format "Article [number], Section [number], Chapter [number]" *after* the information is presented.  Citations should supplement, not replace, the answer.
+        3.  **Prioritize direct quotes** from the Constitution when possible, enclosed in quotation marks.
+        4.  **If the context is insufficient** to fully answer the question, provide a partial answer with the information available and explicitly state what information is missing (e.g., "The context provides information on X, but not on Y.").
+        5.  **Maintain the formal language** of the 1973 Constitution.
+        6.  **If the question is clearly unrelated** to the 1973 Constitution of Pakistan, respond: "This question is outside the scope of my knowledge."
+        7.  Do not include any conversational elements or explanations of your reasoning.
+
+        RESPONSE: [Answer here]
+        """
         
         return PromptTemplate(
             template=template,
-            input_variables=["context", "pdf_path"]
+            input_variables=["context", "question"]
         )
 
     def _prepare_context(self, retrieval_results: List) -> Tuple[str, str]:

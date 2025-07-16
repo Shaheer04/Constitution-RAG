@@ -10,14 +10,38 @@ class QueryRewriter:
         Rewrite the user query using the LLM for clarity and retrieval optimization.
         Raises an exception if rewriting fails.
         """
-        prompt = (
-            "Rewrite the following question to be as clear, specific, and concise as possible, "
-            "optimizing it for retrieval from a constitutional database. "
-            "Do not change the meaning, but resolve ambiguity and add missing context if needed."
-            "Assume the question is about Pakistan's 1973 Constitution unless it is clearly not."
-            "If the question mentions an article number (e.g., Article 63), treat it as referring to Pakistan's Constitution.\n\n"
-            f"Original question: {query}\n\nRewritten:"
-        )
+        prompt = f"""You are an expert at rewriting questions for optimal search of Pakistan's 1973 Constitution. Your goal is to make the question as clear, specific, and concise as possible for retrieving relevant information from a constitutional database. Do not change the core intent of the question.
+
+        Here are some examples:
+
+        Original question: What is the eligibility criteria to be president?
+        Rewritten question: Eligibility criteria for President of Pakistan (1973 Constitution)
+
+        Original question: How is the speaker of the National Assembly elected?
+        Rewritten question: Election process for Speaker of the National Assembly (1973 Constitution)
+
+        Original question: Compare the powers of the President and the Prime Minister in dissolving the National Assembly.
+        Rewritten question: Comparison of Presidential and Prime Ministerial powers regarding dissolution of the National Assembly (1973 Constitution)
+
+        Original question: How does the Constitution address conflicts between Federal and Provincial laws?
+        Rewritten question: Resolution of conflicts between Federal and Provincial laws according to the 1973 Constitution of Pakistan.
+
+        Now, rewrite the question below.
+
+        ---
+        Original question: {query}
+        ---
+
+        Focus on:
+        *   Removing ambiguity.
+        *   Using terminology found in the 1973 Constitution.
+        *   Ensuring the question can be answered directly from the constitutional text.
+        *   Do not add or assume specific Article numbers unless they are already in the original question.
+        *   Do not add extraneous information not found in the original question.
+        *   Do not include any conversational elements or explanations of your reasoning.
+
+        Rewritten question:
+        """
         
         response = requests.post(
             f"{self.ollama_url}/api/generate",

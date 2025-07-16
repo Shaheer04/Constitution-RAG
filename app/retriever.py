@@ -1,8 +1,8 @@
 """
-Retriever Component with Reranker and Hybrid Retrieval for Constitution RAG System
+Enhanced Retriever Component with Improved Accuracy for Constitution RAG System
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Tuple
 import chromadb
 from sentence_transformers import SentenceTransformer
 import logging
@@ -12,6 +12,30 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 from langchain.retrievers import BM25Retriever
 from langchain.schema import Document
+import numpy as np
+from sklearn.metrics.pairwise import cosine_similarity
+import re
+from collections import Counter
+import nltk
+from nltk.corpus import stopwords
+from nltk.tokenize import word_tokenize
+from nltk.stem import WordNetLemmatizer
+
+# Download required NLTK data
+try:
+    nltk.data.find('tokenizers/punkt_tab')
+except LookupError:
+    nltk.download('punkt_tab')
+
+try:
+    nltk.data.find('corpora/stopwords')
+except LookupError:
+    nltk.download('stopwords')
+
+try:
+    nltk.data.find('corpora/wordnet')
+except LookupError:
+    nltk.download('wordnet')
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -25,7 +49,7 @@ class FilterType(Enum):
 
 @dataclass
 class RetrievalResult:
-    """Data class for retrieval results"""
+    """Enhanced data class for retrieval results"""
     text: str
     metadata: Dict[str, Any]
     similarity_score: float = 0.0
@@ -38,6 +62,73 @@ class RetrievalResult:
     heading: str = ""
     page_number: int = 0
     element_type: str = "text"
+    reranker_score: float = 0.0
+    context_score: float = 0.0
+    diversity_penalty: float = 0.0
+    final_score: float = 0.0
+
+class QueryProcessor:
+    """Enhanced query processing with legal domain awareness"""
+    
+    def __init__(self):
+        self.stop_words = set(stopwords.words('english'))
+        self.lemmatizer = WordNetLemmatizer()
+        self.legal_terms = {
+            'constitution', 'amendment', 'article', 'section', 'clause',
+            'law', 'legal', 'court', 'judge', 'justice', 'right', 'liberty',
+            'freedom', 'government', 'federal', 'state', 'congress', 'senate',
+            'house', 'president', 'judicial', 'legislative', 'executive'
+        }
+        
+    def extract_key_terms(self, query: str) -> List[str]:
+        """Extract key terms from query with legal domain awareness"""
+        # Remove punctuation and convert to lowercase
+        cleaned_query = re.sub(r'[^\w\s]', ' ', query.lower())
+        tokens = word_tokenize(cleaned_query)
+        
+        # Filter out stop words and lemmatize
+        key_terms = []
+        for token in tokens:
+            if token not in self.stop_words and len(token) > 2:
+                lemmatized = self.lemmatizer.lemmatize(token)
+                key_terms.append(lemmatized)
+        
+        return key_terms
+    
+    def identify_query_type(self, query: str) -> str:
+        """Identify the type of query (factual, procedural, interpretive, etc.)"""
+        query_lower = query.lower()
+        
+        if any(word in query_lower for word in ['what', 'who', 'when', 'where', 'which']):
+            return 'factual'
+        elif any(word in query_lower for word in ['how', 'process', 'procedure']):
+            return 'procedural'
+        elif any(word in query_lower for word in ['why', 'purpose', 'intent', 'meaning']):
+            return 'interpretive'
+        elif any(word in query_lower for word in ['can', 'may', 'allowed', 'permitted']):
+            return 'permission'
+        else:
+            return 'general'
+    
+    def expand_query(self, query: str) -> List[str]:
+        """Expand query with synonyms and related terms"""
+        query_variants = [query]
+        
+        # Add legal synonyms
+        legal_synonyms = {
+            'freedom': ['liberty', 'right'],
+            'law': ['statute', 'regulation', 'rule'],
+            'government': ['state', 'federal', 'administration'],
+            'court': ['tribunal', 'judiciary', 'judicial'],
+            'congress': ['legislature', 'parliament']
+        }
+        
+        for term, synonyms in legal_synonyms.items():
+            if term in query.lower():
+                for synonym in synonyms:
+                    query_variants.append(query.replace(term, synonym))
+        
+        return query_variants
 
 class ChromaDBManager:
     def __init__(self, chroma_db_path: str, collection_name: str = "documents"):
@@ -84,19 +175,70 @@ class ChromaDBManager:
             logger.error(f"Error getting documents from ChromaDB: {e}")
             return None
 
-class LegalBERTReranker:
+class Reranker:
+    """Enhanced reranker with multiple scoring mechanisms"""
+    
     def __init__(self, model_name: str = "nlpaueb/legal-bert-base-uncased"):
-        """Initialize Legal BERT reranker"""
+        """Initialize Advanced reranker"""
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
         self.model.eval()
-
+        self.query_processor = QueryProcessor()
+        
+    def calculate_context_score(self, query: str, result: RetrievalResult, 
+                              all_results: List[RetrievalResult]) -> float:
+        """Calculate contextual relevance score"""
+        context_score = 0.0
+        
+        # Hierarchical context bonus
+        if result.hierarchical_path != 'root':
+            context_score += 0.2
+        
+        # Heading relevance
+        if result.heading:
+            query_terms = self.query_processor.extract_key_terms(query)
+            heading_terms = self.query_processor.extract_key_terms(result.heading)
+            common_terms = set(query_terms) & set(heading_terms)
+            if common_terms:
+                context_score += 0.3 * (len(common_terms) / len(query_terms))
+        
+        # Element type relevance
+        query_type = self.query_processor.identify_query_type(query)
+        if query_type == 'factual' and result.element_type == 'text':
+            context_score += 0.1
+        elif query_type == 'procedural' and result.element_type in ['heading', 'table']:
+            context_score += 0.15
+        
+        return min(context_score, 1.0)
+    
+    def calculate_diversity_penalty(self, result: RetrievalResult, 
+                                  selected_results: List[RetrievalResult]) -> float:
+        """Calculate diversity penalty to avoid redundant results"""
+        if not selected_results:
+            return 0.0
+        
+        penalties = []
+        for selected in selected_results:
+            # Same hierarchical path penalty
+            if result.hierarchical_path == selected.hierarchical_path:
+                penalties.append(0.3)
+            
+            # Text similarity penalty
+            result_words = set(result.text.lower().split())
+            selected_words = set(selected.text.lower().split())
+            overlap = len(result_words & selected_words) / len(result_words | selected_words)
+            if overlap > 0.7:
+                penalties.append(0.4)
+        
+        return max(penalties) if penalties else 0.0
+    
     def rerank_results(self, query: str, results: List[RetrievalResult], 
                       top_k: int = 10) -> List[RetrievalResult]:
-        """Rerank retrieval results using Legal BERT model"""
+        """Reranking with multiple scoring mechanisms"""
         if not results:
             return []
-        reranked_results = []
+        
+        # Calculate Legal BERT scores
         for result in results:
             inputs = self.tokenizer(
                 query, 
@@ -110,22 +252,40 @@ class LegalBERTReranker:
                 outputs = self.model(**inputs)
                 relevance_score = torch.softmax(outputs.logits, dim=-1)[0, 1].item()
             result.reranker_score = relevance_score
-            result.combined_score = (
-                0.6 * result.combined_score + 
-                0.4 * relevance_score
+        
+        # Calculate context scores
+        for result in results:
+            result.context_score = self.calculate_context_score(query, result, results)
+        
+        # Apply diversity penalty and calculate final scores
+        selected_results = []
+        remaining_results = sorted(results, key=lambda x: x.combined_score, reverse=True)
+        
+        for result in remaining_results:
+            result.diversity_penalty = self.calculate_diversity_penalty(result, selected_results)
+            result.final_score = (
+                0.4 * result.combined_score +
+                0.3 * result.reranker_score +
+                0.2 * result.context_score -
+                0.1 * result.diversity_penalty
             )
-            reranked_results.append(result)
-        reranked_results.sort(key=lambda x: x.combined_score, reverse=True)
-        return reranked_results[:top_k]
+            selected_results.append(result)
+        
+        # Sort by final score and return top k
+        selected_results.sort(key=lambda x: x.final_score, reverse=True)
+        return selected_results[:top_k]
 
 class Retriever:
-    def __init__(self, 
+    """Retriever with improved accuracy mechanisms"""
+
+    def __init__(self,
                  embedding_model_name: str = "all-MiniLM-L6-v2",
                  chroma_db_path: str = "./constitution_db"):
-        """Initialize the Retriever"""
+        """Initialize the Enhanced Retriever"""
         self.embedding_model = SentenceTransformer(embedding_model_name)
         self.db_manager = ChromaDBManager(chroma_db_path)
-        self.reranker = LegalBERTReranker()
+        self.reranker = Reranker()
+        self.query_processor = QueryProcessor()
 
         # Load all docs for BM25
         all_docs = self.db_manager.get_all_documents()
@@ -134,6 +294,7 @@ class Retriever:
         if all_docs and all_docs.get('documents'):
             self.bm25_docs = all_docs['documents']
             self.bm25_metadatas = all_docs['metadatas']
+        
         self.bm25_documents = [
             Document(page_content=doc, metadata=meta)
             for doc, meta in zip(self.bm25_docs, self.bm25_metadatas)
@@ -155,6 +316,7 @@ class Retriever:
         formatted_results = []
         if not results or not results.get('documents') or not results['documents'][0]:
             return formatted_results
+        
         for i in range(len(results['documents'][0])):
             metadata = results['metadatas'][0][i]
             result = RetrievalResult(
@@ -171,37 +333,118 @@ class Retriever:
             formatted_results.append(result)
         return formatted_results
 
-    def retrieve_relevant_chunks(self, query: str, n_results: int = 10, 
-                               filter_by_level: Optional[int] = None, 
-                               filter_by_type: Optional[str] = None) -> List[RetrievalResult]:
-        """Retrieve relevant chunks based on query with hierarchical filtering"""
+    def multi_vector_retrieve(self, query: str, n_results: int = 15) -> List[RetrievalResult]:
+        """Multi-vector retrieval with query expansion"""
+        all_results = []
+        
+        # Original query
+        query_embedding = self.embedding_model.encode([query])
+        results = self.db_manager.query(
+            query_embeddings=query_embedding.tolist(),
+            n_results=n_results
+        )
+        if results:
+            all_results.extend(self._format_similarity_results(results))
+        
+        # Expanded queries
+        expanded_queries = self.query_processor.expand_query(query)
+        for expanded_query in expanded_queries[1:3]:  # Limit to avoid too many queries
+            query_embedding = self.embedding_model.encode([expanded_query])
+            results = self.db_manager.query(
+                query_embeddings=query_embedding.tolist(),
+                n_results=n_results // 2
+            )
+            if results:
+                all_results.extend(self._format_similarity_results(results))
+        
+        # Remove duplicates based on text content
+        unique_results = {}
+        for result in all_results:
+            text_hash = hash(result.text)
+            if text_hash not in unique_results or result.similarity_score > unique_results[text_hash].similarity_score:
+                unique_results[text_hash] = result
+        
+        return list(unique_results.values())
+
+    def adaptive_hybrid_retrieve(self, query: str, n_results: int = 10) -> List[RetrievalResult]:
+        """Adaptive hybrid retrieval with query-aware weighting"""
         if not query.strip():
             logger.warning("Empty query provided")
             return []
-        query_embedding = self.embedding_model.encode([query])
-        where_clause = self._build_where_clause(filter_by_level, filter_by_type)
-        results = self.db_manager.query(
-            query_embeddings=query_embedding.tolist(),
-            n_results=n_results,
-            where_clause=where_clause if where_clause else None
+        
+        # Determine query type for adaptive weighting
+        print("Identifying query type...")
+        query_type = self.query_processor.identify_query_type(query)
+        
+        # Adaptive weights based on query type
+        if query_type == 'factual':
+            similarity_weight, keyword_weight = 0.8, 0.2
+        elif query_type == 'procedural':
+            similarity_weight, keyword_weight = 0.6, 0.4
+        elif query_type == 'interpretive':
+            similarity_weight, keyword_weight = 0.7, 0.3
+        else:
+            similarity_weight, keyword_weight = 0.7, 0.3
+        
+        # Multi-vector similarity search
+        print(f"Performing multi-vector retrieval for query")
+        similarity_results = self.multi_vector_retrieve(query, n_results * 2)
+        
+        # Enhanced keyword search
+        print(f"Performing enhanced keyword search for query")
+        keyword_results = self.enhanced_keyword_search(query, n_results * 2)
+        
+        # Combine and score results
+        print(f"Combining search results")
+        combined_results = self._combine_search_results(similarity_results, keyword_results)
+        self._calculate_combined_scores(combined_results, similarity_weight, keyword_weight)
+        
+        # Sort by combined score
+        sorted_results = sorted(
+            combined_results.values(), 
+            key=lambda x: x.combined_score, 
+            reverse=True
         )
-        if not results:
-            return []
-        return self._format_similarity_results(results)
+        
+        # Enhanced reranking
+        print(f"Reranking results for query")
+        reranked_results = self.reranker.rerank_results(query, sorted_results, top_k=n_results)
+        
+        return reranked_results
 
-    def keyword_search(self, query: str, n_results: int = 10) -> List[RetrievalResult]:
-        """Perform optimized BM25 keyword-based search using LangChain."""
+    def enhanced_keyword_search(self, query: str, n_results: int = 10) -> List[RetrievalResult]:
+        """Enhanced keyword search with term boosting"""
         if not self.bm25_documents:
             return []
-        results = self.bm25_retriever.get_relevant_documents(query)
+        
+        # Extract key terms and boost important ones
+        key_terms = self.query_processor.extract_key_terms(query)
+        
+        # Create boosted query
+        boosted_query = query
+        for term in key_terms:
+            if term in self.query_processor.legal_terms:
+                boosted_query += f" {term} {term}"  # Boost legal terms
+        
+        results = self.bm25_retriever.get_relevant_documents(boosted_query)
         keyword_matches = []
+        
         for doc in results[:n_results]:
             meta = doc.metadata
+            
+            # Calculate enhanced keyword score
+            keyword_score = getattr(doc, "score", 0)
+            
+            # Boost score for matched key terms
+            text_lower = doc.page_content.lower()
+            matched_terms = [term for term in key_terms if term in text_lower]
+            term_boost = len(matched_terms) / len(key_terms) if key_terms else 0
+            
             result = RetrievalResult(
                 text=doc.page_content,
                 metadata=meta,
-                keyword_score=getattr(doc, "score", 0),
-                matched_keywords=[],
+                keyword_score=keyword_score * (1 + term_boost),
+                matched_keywords=matched_terms,
                 hierarchical_path=meta.get('hierarchical_path', 'root'),
                 level=meta.get('level', 0),
                 heading=meta.get('heading', ''),
@@ -209,23 +452,32 @@ class Retriever:
                 element_type=meta.get('element_type', 'text')
             )
             keyword_matches.append(result)
+        
         return keyword_matches
 
     def _combine_search_results(self, similarity_results: List[RetrievalResult], 
                                keyword_results: List[RetrievalResult]) -> Dict[str, RetrievalResult]:
         """Combine similarity and keyword search results"""
         combined_results = {}
+        
+        # Add similarity results
         for i, result in enumerate(similarity_results):
-            doc_id = result.metadata.get('chunk_id', str(i))
+            doc_id = result.metadata.get('chunk_id', f"sim_{i}")
             combined_results[doc_id] = result
-        for result in keyword_results:
-            doc_id = result.metadata.get('chunk_id', 'unknown')
+        
+        # Add or merge keyword results
+        for i, result in enumerate(keyword_results):
+            doc_id = result.metadata.get('chunk_id', f"key_{i}")
             if doc_id in combined_results:
+                # Merge scores
                 combined_results[doc_id].keyword_score = result.keyword_score
                 combined_results[doc_id].matched_keywords = result.matched_keywords
             else:
+                # Add new result
                 result.distance = 1.0
+                result.similarity_score = 0.0
                 combined_results[doc_id] = result
+        
         return combined_results
 
     def _calculate_combined_scores(self, combined_results: Dict[str, RetrievalResult], 
@@ -233,48 +485,19 @@ class Retriever:
         """Calculate combined scores for hybrid retrieval"""
         if not combined_results:
             return
-        max_similarity = max(r.similarity_score for r in combined_results.values())
-        max_keyword = max(r.keyword_score for r in combined_results.values())
+        
+        # Normalize scores
+        similarity_scores = [r.similarity_score for r in combined_results.values()]
+        keyword_scores = [r.keyword_score for r in combined_results.values()]
+        
+        max_similarity = max(similarity_scores) if similarity_scores else 1.0
+        max_keyword = max(keyword_scores) if keyword_scores else 1.0
+        
         for result in combined_results.values():
             norm_similarity = result.similarity_score / max_similarity if max_similarity > 0 else 0
             norm_keyword = result.keyword_score / max_keyword if max_keyword > 0 else 0
+            
             result.combined_score = (
                 similarity_weight * norm_similarity + 
                 keyword_weight * norm_keyword
             )
-
-    def hybrid_retrieve(self, query: str, n_results: int = 10, 
-                       similarity_weight: float = 0.7, 
-                       keyword_weight: float = 0.3,
-                       filter_by_level: Optional[int] = None, 
-                       filter_by_type: Optional[str] = None) -> List[RetrievalResult]:
-        """Hybrid retrieval combining similarity search, keyword matching, and reranking"""
-        if not query.strip():
-            logger.warning("Empty query provided")
-            return []
-        total_weight = similarity_weight + keyword_weight
-        if total_weight == 0:
-            logger.error("Both weights cannot be zero")
-            return []
-        similarity_weight = similarity_weight / total_weight
-        keyword_weight = keyword_weight / total_weight
-
-        # 1. Similarity search
-        similarity_results = self.retrieve_relevant_chunks(
-            query, n_results * 2, filter_by_level, filter_by_type
-        )
-        # 2. Keyword search (BM25)
-        keyword_results = self.keyword_search(query, n_results * 2)
-        # 3. Combine results
-        combined_results = self._combine_search_results(similarity_results, keyword_results)
-        # 4. Calculate combined scores
-        self._calculate_combined_scores(combined_results, similarity_weight, keyword_weight)
-        # 5. Sort by combined score
-        sorted_results = sorted(
-            combined_results.values(), 
-            key=lambda x: x.combined_score, 
-            reverse=True
-        )
-        # 6. Rerank with LegalBERTReranker (if enough results)
-        reranked_results = self.reranker.rerank_results(query, sorted_results, top_k=n_results)
-        return reranked_results
