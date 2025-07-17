@@ -12,10 +12,7 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
 from langchain.retrievers import BM25Retriever
 from langchain.schema import Document
-import numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
 import re
-from collections import Counter
 import nltk
 from nltk.corpus import stopwords
 from nltk.tokenize import word_tokenize
@@ -57,14 +54,8 @@ class RetrievalResult:
     combined_score: float = 0.0
     distance: float = 1.0
     matched_keywords: List[str] = None
-    hierarchical_path: str = "root"
-    level: int = 0
-    heading: str = ""
     page_number: int = 0
     element_type: str = "text"
-    reranker_score: float = 0.0
-    context_score: float = 0.0
-    diversity_penalty: float = 0.0
     final_score: float = 0.0
 
 class QueryProcessor:
@@ -131,7 +122,7 @@ class QueryProcessor:
         return query_variants
 
 class ChromaDBManager:
-    def __init__(self, chroma_db_path: str, collection_name: str = "documents"):
+    def __init__(self, chroma_db_path: str, collection_name: str = "pdf_chunks"):
         """Initialize ChromaDB manager"""
         self.chroma_client = chromadb.PersistentClient(path=chroma_db_path)
         self.collection_name = collection_name
@@ -177,92 +168,92 @@ class ChromaDBManager:
 
 class Reranker:
     """Enhanced reranker with multiple scoring mechanisms"""
-    
+
     def __init__(self, model_name: str = "nlpaueb/legal-bert-base-uncased"):
         """Initialize Advanced reranker"""
         self.tokenizer = AutoTokenizer.from_pretrained(model_name)
         self.model = AutoModelForSequenceClassification.from_pretrained(model_name)
         self.model.eval()
         self.query_processor = QueryProcessor()
-        
+
     def calculate_context_score(self, query: str, result: RetrievalResult, 
                               all_results: List[RetrievalResult]) -> float:
         """Calculate contextual relevance score"""
         context_score = 0.0
-        
-        # Hierarchical context bonus
-        if result.hierarchical_path != 'root':
-            context_score += 0.2
-        
-        # Heading relevance
-        if result.heading:
-            query_terms = self.query_processor.extract_key_terms(query)
-            heading_terms = self.query_processor.extract_key_terms(result.heading)
-            common_terms = set(query_terms) & set(heading_terms)
-            if common_terms:
-                context_score += 0.3 * (len(common_terms) / len(query_terms))
-        
+
         # Element type relevance
         query_type = self.query_processor.identify_query_type(query)
         if query_type == 'factual' and result.element_type == 'text':
             context_score += 0.1
-        elif query_type == 'procedural' and result.element_type in ['heading', 'table']:
+        elif query_type == 'procedural' and result.element_type in ['table']:
             context_score += 0.15
-        
+
         return min(context_score, 1.0)
-    
+
     def calculate_diversity_penalty(self, result: RetrievalResult, 
                                   selected_results: List[RetrievalResult]) -> float:
         """Calculate diversity penalty to avoid redundant results"""
         if not selected_results:
             return 0.0
-        
+
         penalties = []
         for selected in selected_results:
-            # Same hierarchical path penalty
-            if result.hierarchical_path == selected.hierarchical_path:
-                penalties.append(0.3)
-            
             # Text similarity penalty
             result_words = set(result.text.lower().split())
             selected_words = set(selected.text.lower().split())
             overlap = len(result_words & selected_words) / len(result_words | selected_words)
             if overlap > 0.7:
                 penalties.append(0.4)
-        
+
         return max(penalties) if penalties else 0.0
-    
-    def rerank_results(self, query: str, results: List[RetrievalResult], 
-                      top_k: int = 10) -> List[RetrievalResult]:
-        """Reranking with multiple scoring mechanisms"""
+
+    def rerank_results(self, query: str, results: List[RetrievalResult], top_k: int = 10) -> List[RetrievalResult]:
+        """Optimized reranking with batch scoring and efficient penalty calculation"""
         if not results:
             return []
-        
-        # Calculate Legal BERT scores
+
+        # Batch LegalBERT scoring
+        texts = [r.text for r in results]
+        inputs = self.tokenizer(
+            [query] * len(texts),
+            texts,
+            truncation=True,
+            padding=True,
+            max_length=512,
+            return_tensors="pt"
+        )
+        with torch.no_grad():
+            outputs = self.model(**inputs)
+            relevance_scores = torch.softmax(outputs.logits, dim=-1)[:, 1].tolist()
+        for result, score in zip(results, relevance_scores):
+            result.reranker_score = score
+
+        # Context scores (vectorized)
+        query_type = self.query_processor.identify_query_type(query)
         for result in results:
-            inputs = self.tokenizer(
-                query, 
-                result.text,
-                truncation=True,
-                padding=True,
-                max_length=512,
-                return_tensors="pt"
-            )
-            with torch.no_grad():
-                outputs = self.model(**inputs)
-                relevance_score = torch.softmax(outputs.logits, dim=-1)[0, 1].item()
-            result.reranker_score = relevance_score
-        
-        # Calculate context scores
-        for result in results:
-            result.context_score = self.calculate_context_score(query, result, results)
-        
-        # Apply diversity penalty and calculate final scores
+            if query_type == 'factual' and result.element_type == 'text':
+                result.context_score = 0.1
+            elif query_type == 'procedural' and result.element_type == 'table':
+                result.context_score = 0.15
+            else:
+                result.context_score = 0.0
+
+        # Sort by combined_score once
+        results.sort(key=lambda x: x.combined_score, reverse=True)
+
+        # Diversity penalty (set-based, only for top_k)
         selected_results = []
-        remaining_results = sorted(results, key=lambda x: x.combined_score, reverse=True)
-        
-        for result in remaining_results:
-            result.diversity_penalty = self.calculate_diversity_penalty(result, selected_results)
+        selected_texts = set()
+        for result in results:
+            penalty = 0.0
+            result_words = set(result.text.lower().split())
+            for selected in selected_results:
+                selected_words = set(selected.text.lower().split())
+                overlap = len(result_words & selected_words) / max(1, len(result_words | selected_words))
+                if overlap > 0.7:
+                    penalty = 0.4
+                    break
+            result.diversity_penalty = penalty
             result.final_score = (
                 0.4 * result.combined_score +
                 0.3 * result.reranker_score +
@@ -270,8 +261,10 @@ class Reranker:
                 0.1 * result.diversity_penalty
             )
             selected_results.append(result)
-        
-        # Sort by final score and return top k
+            if len(selected_results) >= top_k:
+                break
+
+        # Final sort and return top_k
         selected_results.sort(key=lambda x: x.final_score, reverse=True)
         return selected_results[:top_k]
 
@@ -280,7 +273,7 @@ class Retriever:
 
     def __init__(self,
                  embedding_model_name: str = "all-MiniLM-L6-v2",
-                 chroma_db_path: str = "./constitution_db"):
+                 chroma_db_path: str = "../data/chroma_db"):
         """Initialize the Enhanced Retriever"""
         self.embedding_model = SentenceTransformer(embedding_model_name)
         self.db_manager = ChromaDBManager(chroma_db_path)
@@ -324,12 +317,13 @@ class Retriever:
                 metadata=metadata,
                 distance=results['distances'][0][i],
                 similarity_score=1.0 - results['distances'][0][i],
-                hierarchical_path=metadata.get('hierarchical_path', 'root'),
-                level=metadata.get('level', 0),
-                heading=metadata.get('heading', ''),
                 page_number=max(1, metadata.get('page_number', 1)),
                 element_type=metadata.get('element_type', 'text')
             )
+            # Add all_pages to metadata and as attribute if present
+            result.metadata['all_pages'] = metadata.get('all_pages', str(result.page_number))
+            # Optionally, add as attribute (if you want direct access)
+            result.all_pages = metadata.get('all_pages', str(result.page_number))
             formatted_results.append(result)
         return formatted_results
 
@@ -416,26 +410,18 @@ class Retriever:
         """Enhanced keyword search with term boosting"""
         if not self.bm25_documents:
             return []
-        
-        # Extract key terms and boost important ones
         key_terms = self.query_processor.extract_key_terms(query)
-        
-        # Create boosted query
         boosted_query = query
         for term in key_terms:
             if term in self.query_processor.legal_terms:
-                boosted_query += f" {term} {term}"  # Boost legal terms
+                boosted_query += f" {term} {term}"
         
         results = self.bm25_retriever.get_relevant_documents(boosted_query)
         keyword_matches = []
         
         for doc in results[:n_results]:
             meta = doc.metadata
-            
-            # Calculate enhanced keyword score
             keyword_score = getattr(doc, "score", 0)
-            
-            # Boost score for matched key terms
             text_lower = doc.page_content.lower()
             matched_terms = [term for term in key_terms if term in text_lower]
             term_boost = len(matched_terms) / len(key_terms) if key_terms else 0
@@ -445,15 +431,15 @@ class Retriever:
                 metadata=meta,
                 keyword_score=keyword_score * (1 + term_boost),
                 matched_keywords=matched_terms,
-                hierarchical_path=meta.get('hierarchical_path', 'root'),
-                level=meta.get('level', 0),
-                heading=meta.get('heading', ''),
                 page_number=max(1, meta.get('page_number', 1)),
                 element_type=meta.get('element_type', 'text')
             )
+            # Add all_pages to metadata and as attribute if present
+            result.metadata['all_pages'] = meta.get('all_pages', str(result.page_number))
+            result.all_pages = meta.get('all_pages', str(result.page_number))
             keyword_matches.append(result)
         
-        return keyword_matches
+        return keyword_matches  
 
     def _combine_search_results(self, similarity_results: List[RetrievalResult], 
                                keyword_results: List[RetrievalResult]) -> Dict[str, RetrievalResult]:

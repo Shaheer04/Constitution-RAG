@@ -1,6 +1,5 @@
 """
-Simple RAG System with Local PDF References
-Adds clickable hyperlinks that open local PDF files at specific pages
+FrontEnd for RAG System using Streamlit
 """
 
 import streamlit as st
@@ -11,16 +10,20 @@ from typing import List, Dict, Any
 import uuid
 import re
 from pathlib import Path
-import urllib.parse
 
 # LangChain imports for conversation memory
 from langchain.memory import ConversationBufferWindowMemory
 
 # Import your existing RAG components
-from app.pre_processor import PreProcessor
 from app.retriever import Retriever
 from app.generator import Generator
 from app.query_rewriter import QueryRewriter
+
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -152,21 +155,13 @@ class ConstitutionRAGApp:
             logger.info("Loading RAG system...")
             
             # Configuration
-            pdf_path = "./data/constitution-1973.pdf"
-            db_path = "./constitution_db"
+            pdf_path = "data/constitution-1973.pdf"
+            db_path = "data/chroma_db"
             embedding_model = "all-MiniLM-L6-v2"
             ollama_model = "llama3.2"
-            ollama_url = "https://d6bf24c44f53.ngrok-free.app/"
-            
+            ollama_url = os.getenv("OLLAMA_URL") 
             
             # Initialize components
-            preprocessor = PreProcessor(
-                embedding_model_name=embedding_model,
-                chroma_db_path=db_path,
-                ollama_model=ollama_model,
-                ollama_url=ollama_url
-            )
-            
             retriever = Retriever(
                 embedding_model_name=embedding_model,
                 chroma_db_path=db_path
@@ -175,14 +170,11 @@ class ConstitutionRAGApp:
             generator = Generator(
                 ollama_model=ollama_model,
                 ollama_url=ollama_url,
-                pdf_path=pdf_path, 
-                base_url=""         
             )
             
             query_rewriter = QueryRewriter(ollama_url, ollama_model)
             
             return {
-                'preprocessor': preprocessor,
                 'retriever': retriever,
                 'generator': generator,
                 'pdf_path': pdf_path,
@@ -203,15 +195,6 @@ class ConstitutionRAGApp:
                 if rag_components:
                     st.session_state.rag_system = rag_components
                     st.session_state.system_initialized = True
-
-                    # Add this check
-                    if 'db_setup_complete' not in st.session_state:
-                        st.session_state.db_setup_complete = False
-
-                    if self.needs_database_setup() and not st.session_state.db_setup_complete:
-                        st.warning("Database is empty. Setting up database...")
-                        self.setup_database()
-                        st.session_state.db_setup_complete = True
                 else:
                     st.error("Failed to initialize RAG system")
                     st.stop()
@@ -234,99 +217,31 @@ class ConstitutionRAGApp:
         except Exception as e:
             logger.error(f"Error checking database: {e}")
             return True
-    
-    def setup_database(self):
-        """Setup the database"""
-        try:
-            rag_system = st.session_state.rag_system
-            pdf_path = rag_system['pdf_path']
-            
-            if not os.path.exists(pdf_path):
-                st.error(f"PDF file not found: {pdf_path}")
-                return False
-            
-            with st.spinner("📖 Processing constitution PDF..."):
-                # Process document
-                preprocessor = rag_system['preprocessor']
-                
-                # Convert document
-                document = preprocessor.convert_document(pdf_path)
-                st.success("✅ Document converted successfully")
-                
-                # Create chunks
-                chunks = preprocessor.create_hybrid_chunks(document, max_tokens=1000, overlap_ratio=0.1)
-                st.success(f"✅ Created {len(chunks)} chunks")
-                
-                # Embed and store
-                preprocessor.embed_and_store(chunks, document_name="constitution_of_pakistan")
-                st.success("✅ Database setup completed!")
-                
-            return True
-            
-        except Exception as e:
-            st.error(f"Error setting up database: {e}")
-            logger.error(f"Database setup error: {e}")
-            return False
-    
-    def test_system_health(self) -> Dict[str, Any]:
-        """Test system health"""
-        health_status = {
-            "overall": False,
-            "generator": False,
-            "retriever": False,
-            "database": False,
-            "document_count": 0,
-            "errors": []
-        }
+
+    def _make_clickable(self, refs):
+        """refs: List[RetrievalResult] or similar objects"""
         
-        try:
-            rag_system = st.session_state.rag_system
-            if not rag_system:
-                health_status["errors"].append("RAG system not initialized")
-                return health_status
-            
-            # Test generator
-            try:
-                generator = rag_system['generator']
-                test_result = generator.test_connection()
-                health_status["generator"] = test_result.get("status") == "success"
-                if not health_status["generator"]:
-                    health_status["errors"].append(f"Generator: {test_result.get('error', 'Unknown error')}")
-            except Exception as e:
-                health_status["errors"].append(f"Generator test failed: {e}")
-            
-            # Test retriever and database
-            try:
-                retriever = rag_system['retriever']
-                test_results = retriever.retrieve_relevant_chunks("test", n_results=1)
-                health_status["retriever"] = isinstance(test_results, list)
-                
-                if health_status["retriever"]:
-                    # Check database content
-                    all_docs = retriever.db_manager.get_all_documents()
-                    if all_docs and all_docs.get('documents'):
-                        health_status["document_count"] = len(all_docs['documents'])
-                        health_status["database"] = health_status["document_count"] > 0
-                    else:
-                        health_status["errors"].append("Database is empty")
-                else:
-                    health_status["errors"].append("Retriever test failed")
-                    
-            except Exception as e:
-                health_status["errors"].append(f"Retriever test failed: {e}")
-            
-            # Overall health
-            health_status["overall"] = all([
-                health_status["generator"],
-                health_status["retriever"],
-                health_status["database"]
-            ])
-            
-        except Exception as e:
-            health_status["errors"].append(f"Health check failed: {e}")
-        
-        return health_status
-    
+        if not refs:
+            return ""
+
+        base_url = "http://localhost:8000"
+        pdf_file = "constitution-1973.pdf"
+
+        # Build unique pages once, keep order
+        unique_pages = sorted({
+            int(p)
+            for r in refs
+            for p in str(r.all_pages or r.page_number).split(",")
+        })
+
+        # 1️⃣ Superscript footnote numbers inside the answer
+        footnotes = []
+        for idx, page in enumerate(unique_pages, 1):
+            link = f'<a href="{base_url}/{pdf_file}#page={page}" target="_blank">{idx}</a>'
+            footnotes.append(link)
+        # Return the footer line
+        return "<br><b>References:</b> " + ", ".join(footnotes)
+
     def ask_question(self, question: str, n_results: int = 5) -> Dict[str, Any]:
         """Ask question to RAG system"""
         try:
@@ -348,7 +263,7 @@ class ConstitutionRAGApp:
                 query=rewritten_question,
                 n_results=n_results
             )
-
+            print("Type of reranked_results:", type(reranked_results))
             if not reranked_results:
                 return {
                     "answer": "No relevant information found in the constitution database.",
@@ -358,9 +273,12 @@ class ConstitutionRAGApp:
             # Generate response
             print(f"Generating response for question")
             answer = generator.generate_response(rewritten_question, reranked_results)
+            print("making clickable line")
+            clickable_line = self._make_clickable(reranked_results)
+            answer_html = answer + clickable_line
 
             return {
-                "answer": answer,
+                "answer": answer_html,
                 "sources": reranked_results
             }
             
@@ -469,23 +387,13 @@ class ConstitutionRAGApp:
             # Display answer with clickable PDF page references
             answer = response.get("answer", "No answer received")
             sources = response.get("sources", [])
-            pdf_path = st.session_state.rag_system['pdf_path']
             generator = st.session_state.rag_system['generator']
 
             # --- Remove unwanted tags like <think> ---
             answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
 
-            page_numbers = [s.page_number for s in sources if hasattr(s, "page_number")]
-            answer_with_refs = generator._add_citations_optimized(
-                answer, sources, pdf_path, page_numbers
-            )
-
-            def stream_answer_with_refs(answer):
-                for line in answer.split('\n'):
-                    yield line + '\n'
-
-            st.write_stream(stream_answer_with_refs(answer))
-
+            st.markdown(answer, unsafe_allow_html=True) 
+            
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": answer,
