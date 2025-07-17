@@ -132,22 +132,24 @@ class Generator:
             raise ModelError(f"Model validation failed: {str(e)}")
 
     def _create_prompt_template(self) -> PromptTemplate:
-        template = """You are a legal expert on the 1973 Constitution of Pakistan. Use the provided context to answer the question.
+        template = """You are a concise legal expert on the 1973 Constitution of Pakistan. Answer only from the provided context; never add external facts.
 
-        CONTEXT: {context}
-        QUESTION: {question}
+        Format rules (strict):
+        1. Answer length: 50 -- 300 words. If context is insufficient, state what is missing.
+        2. If context is insufficient, state what is missing.
+        2. Cite every fact with its source number in superscript immediately after the clause, e.g. … right to life¹ … right to privacy². Reference list is appended automatically; do not write it inside the answer.
+        3. Prefer direct quotes (≤25 words) enclosed in double quotes.
+        4. Use formal constitutional language.
+        5. If the question is unrelated, reply: This question is outside the scope of the 1973 Constitution of Pakistan.
 
-        INSTRUCTIONS:
-        1.  **Answer accurately,** using ONLY the provided context. Do not use external knowledge. Your answer should provide the relevant information based on the context, citing articles where appropriate.
-        2.  **Cite relevant Articles, sections, and clauses** to support your answer. Use the format "Article [number], Section [number], Chapter [number]" *after* the information is presented.  Citations should supplement, not replace, the answer.
-        3.  **Prioritize direct quotes** from the Constitution when possible, enclosed in quotation marks.
-        4.  **If the context is insufficient** to fully answer the question, provide a partial answer with the information available and explicitly state what information is missing (e.g., "The context provides information on X, but not on Y.").
-        5.  **Maintain the formal language** of the 1973 Constitution.
-        6.  **If the question is clearly unrelated** to the 1973 Constitution of Pakistan, respond: "This question is outside the scope of my knowledge."
-        7.  Do not include any conversational elements or explanations of your reasoning.
+        Context:
+        {context}
 
-        RESPONSE: [Answer here]
-        """
+        Question:
+        {question}
+
+        Answer (cite with superscripts):"""
+        
         return PromptTemplate(
             template=template,
             input_variables=["context", "question"]
