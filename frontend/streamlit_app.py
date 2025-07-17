@@ -108,7 +108,6 @@ st.markdown("""
     border-radius: 8px;
     margin: 1rem 0;
 }
-
 h1 {
     color: #fff; /* or another color that stands out on dark background */
     font-size: 2.5rem;
@@ -160,8 +159,10 @@ class ConstitutionRAGApp:
             pdf_path = str(settings.raw_pdf_dir / "constitution-1973.pdf")
             db_path = str(settings.chroma_dir)
             embedding_model = settings.embed_model
-            ollama_model = "llama3.2"
+            ollama_model = settings.ollama_model 
             ollama_url = os.getenv("OLLAMA_URL")
+            
+            print("OLLAMA_URL being used:", ollama_url)
 
             # Initialize components
             retriever = Retriever(
@@ -328,7 +329,7 @@ class ConstitutionRAGApp:
     def display_main_interface(self):
         """Display main chat interface"""
         
-        st.title("🏛️ Constitution of Pakistan RAG Chatbot")
+        st.title("🏛️ Constitution RAG Chatbot")
         st.markdown("---")  
         
         # Display conversation

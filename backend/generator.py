@@ -3,8 +3,9 @@ RAG Response Generator Using Ollama LLM
 """
 
 import hashlib
+import os
 import time
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Optional, Tuple
 import logging
 from datetime import datetime, timedelta
 
@@ -76,12 +77,13 @@ class ResponseCache:
 
 class Generator:
     def __init__(self, 
-                 ollama_model: str = "qwen3",
+                 ollama_model: str,
                  ollama_url: str = None,
                  temperature: float = 0.3,
                  max_context_size: int = 8000,
                  cache_size: int = 100,
                  cache_ttl: int = 3600):
+        
         self.ollama_model = ollama_model
         self.temperature = temperature
         self.ollama_url = ollama_url
@@ -114,6 +116,7 @@ class Generator:
     def _validate_connection(self):
         try:
             if self.ollama_url:
+                print(self.ollama_url)
                 response = requests.get(
                     f"{self.ollama_url}/api/version",
                     timeout=5
@@ -132,15 +135,29 @@ class Generator:
             raise ModelError(f"Model validation failed: {str(e)}")
 
     def _create_prompt_template(self) -> PromptTemplate:
-        template = """You are a concise legal expert on the 1973 Constitution of Pakistan. Answer only from the provided context; never add external facts.
+        template = """You are a **strict constitutional interpreter** on the 1973 Constitution of Pakistan.  
+        Answer **exclusively** from the provided context. **Any fact not explicitly present must be omitted.**
 
-        Format rules (strict):
-        1. Answer length: 50 -- 300 words. If context is insufficient, state what is missing.
-        2. If context is insufficient, state what is missing.
-        2. Cite every fact with its source number in superscript immediately after the clause, e.g. … right to life¹ … right to privacy². Reference list is appended automatically; do not write it inside the answer.
-        3. Prefer direct quotes (≤25 words) enclosed in double quotes.
-        4. Use formal constitutional language.
-        5. If the question is unrelated, reply: This question is outside the scope of the 1973 Constitution of Pakistan.
+        Rules (non-negotiable):
+        1. Length: 50-300 words.
+        2. Cite every fact article reference with its source number in superscript immediately after the clause, e.g. … right to life¹ … right to privacy². 
+        3. Prefer **quoted excerpts ≤100 words**.  
+        4. Use formal constitutional language.  
+        5. If the context lacks the answer, reply **only**:  
+        “Available provisions do not address this query.”  
+        6. **Never** add commentary, reasoning, or external knowledge.
+
+        Examples (follow exactly):
+
+        Example 1  
+        Context: [Excerpt 1] Article 19: “Every citizen shall have the right to freedom of speech...”¹  
+        Question: What is the scope of free speech?  
+        Answer: Citizens possess “the right to freedom of speech”¹. Restrictions must be “reasonable”¹.
+
+        Example 2  
+        Context: [No excerpt on privacy]  
+        Question: Is privacy a fundamental right?  
+        Answer: Available provisions do not address this query.
 
         Context:
         {context}
@@ -148,7 +165,8 @@ class Generator:
         Question:
         {question}
 
-        Answer (cite with superscripts):"""
+        Answer (cite with superscripts):
+                """
         
         return PromptTemplate(
             template=template,
