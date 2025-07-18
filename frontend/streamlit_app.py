@@ -221,36 +221,6 @@ class ConstitutionRAGApp:
             logger.error(f"Error checking database: {e}")
             return True
 
-    def _make_clickable(self, refs):
-        """refs: List[RetrievalResult] or similar objects"""
-
-        if not refs:
-            return ""
-
-        # Use settings for PDF path and file name
-        pdf_path = str(settings.raw_pdf_dir / "constitution-1973.pdf")
-        pdf_file = os.path.basename(pdf_path)
-        base_url = "http://localhost:8000"
-
-        # Check if PDF exists
-        if not os.path.exists(pdf_path):
-            return "<br><b>References:</b> PDF file not found."
-
-        # Build unique pages once, keep order
-        unique_pages = sorted({
-            int(p)
-            for r in refs
-            for p in str(r.all_pages or r.page_number).split(",")
-        })
-
-        # Superscript footnote numbers inside the answer
-        footnotes = []
-        for idx, page in enumerate(unique_pages, 1):
-            link = f'<a href="{base_url}/{pdf_file}#page={page}" target="_blank">{idx}</a>'
-            footnotes.append(link)
-        # Return the footer line
-        return "<br><b>References:</b> " + ", ".join(footnotes)
-
     def ask_question(self, question: str, n_results: int = 5) -> Dict[str, Any]:
         """Ask question to RAG system"""
         try:
@@ -263,13 +233,13 @@ class ConstitutionRAGApp:
             query_rewriter = rag_system['query_rewriter']
             
             # Query rewriting step (raises error if fails)
-            print(f"Rewriting question")
-            rewritten_question = query_rewriter.rewrite(question)
+            #print(f"Rewriting question")
+            #rewritten_question = query_rewriter.rewrite(question)
             
             # Retrieve relevant documents
-            print(f"Retrieving documents for question: {rewritten_question}")
+            #print(f"Retrieving documents for question: {rewritten_question}")
             reranked_results = retriever.adaptive_hybrid_retrieve(
-                query=rewritten_question,
+                query=question,
                 n_results=n_results
             )
             if not reranked_results:
@@ -277,17 +247,16 @@ class ConstitutionRAGApp:
                     "answer": "No relevant information found in the constitution database.",
                     "sources": []
                 }
-            
+                
+            for result in reranked_results:
+                print(f"Text: {result.text[:100]}... | Score: {result.final_score:.4f} | Page: {result.page_number}")
+                  
             # Generate response
             print(f"Generating response for question")
-            answer = generator.generate_response(rewritten_question, reranked_results)
-            print("making clickable line")
-            clickable_line = self._make_clickable(reranked_results)
-            answer_html = answer + clickable_line
+            answer = generator.generate_response(question, reranked_results)
 
             return {
-                "answer": answer_html,
-                "sources": reranked_results
+                "answer": answer,
             }
             
         except Exception as e:
@@ -392,16 +361,12 @@ class ConstitutionRAGApp:
                 })
                 return
             
-            # Display answer with clickable PDF page references
-            answer = response.get("answer", "No answer received")
-            sources = response.get("sources", [])
-            generator = st.session_state.rag_system['generator']
-
+            answer = response.get("answer", "No answer generated.")
             # --- Remove unwanted tags like <think> ---
             answer = re.sub(r"<think>.*?</think>", "", answer, flags=re.DOTALL).strip()
 
-            st.markdown(answer, unsafe_allow_html=True) 
-            
+            st.markdown(answer, unsafe_allow_html=True)
+
             st.session_state.messages.append({
                 "role": "assistant",
                 "content": answer,

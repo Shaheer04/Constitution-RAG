@@ -14,6 +14,8 @@ from langchain.prompts import PromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 import requests
 
+from backend.config import settings
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -135,76 +137,61 @@ class Generator:
             raise ModelError(f"Model validation failed: {str(e)}")
 
     def _create_prompt_template(self) -> PromptTemplate:
-        template = """You are a **strict constitutional interpreter** on the 1973 Constitution of Pakistan.  
-        Answer **exclusively** from the provided context. **Any fact not explicitly present must be omitted.**
+        template ="""
+        You are a concise constitutional interpreter on the 1973 Constitution of Pakistan.  
+        Answer **only** from the numbered snippets below.
 
-        Rules (non-negotiable):
-        1. Length: 50-300 words.
-        2. Cite every fact article reference with its source number in superscript immediately after the clause, e.g. … right to life¹ … right to privacy². 
-        3. Prefer **quoted excerpts ≤100 words**.  
-        4. Use formal constitutional language.  
-        5. If the context lacks the answer, reply **only**:  
-        “Available provisions do not address this query.”  
-        6. **Never** add commentary, reasoning, or external knowledge.
+        Rules:
+        1.  40-150 words.  
+        2.  **Quote** the relevant **Article number** and **≤40 words** from the snippet.  
+        3.  Cite **only** the **source index** in superscript immediately after the clause, e.g. “Article 19 guarantees freedom of speech[1]”.  
+        4.  Do **not** mention “References”, “Page”, or any external context.  
+        5.  If snippets lack the answer, state: Available provisions do not address this query.
 
-        Examples (follow exactly):
-
-        Example 1  
-        Context: [Excerpt 1] Article 19: “Every citizen shall have the right to freedom of speech...”¹  
-        Question: What is the scope of free speech?  
-        Answer: Citizens possess “the right to freedom of speech”¹. Restrictions must be “reasonable”¹.
-
-        Example 2  
-        Context: [No excerpt on privacy]  
-        Question: Is privacy a fundamental right?  
-        Answer: Available provisions do not address this query.
-
-        Context:
+        Numbered context:
         {context}
 
-        Question:
-        {question}
+        Question: {question}
 
-        Answer (cite with superscripts):
-                """
-        
+        Answer (≤150 words, cite index):
+        """
         return PromptTemplate(
             template=template,
             input_variables=["context", "question"]
         )
 
-    def _prepare_context(self, retrieval_results: List) -> Tuple[str, str]:
-        context_parts = []
-        current_size = 0
-        truncated = False
-        for i, result in enumerate(retrieval_results):
-            citation_id = f"[{i+1}]"
-            context_part = f"Source {citation_id}:\n"
-            if hasattr(result, 'hierarchical_path') and result.hierarchical_path:
-                context_part += f"Path: {result.hierarchical_path}\n"
-            if hasattr(result, 'heading') and result.heading:
-                context_part += f"Section: {result.heading}\n"
-            if hasattr(result, 'page_number'):
-                context_part += f"Page: {result.page_number}\n"
-            context_part += f"Content: {result.text}\n\n"
-            if current_size + len(context_part) > self.max_context_size:
-                remaining_space = self.max_context_size - current_size
-                if remaining_space > 100:
-                    partial_text = result.text[:remaining_space - 50]
-                    context_part = f"Source {citation_id}:\n"
-                    if hasattr(result, 'hierarchical_path') and result.hierarchical_path:
-                        context_part += f"Path: {result.hierarchical_path}\n"
-                    if hasattr(result, 'heading') and result.heading:
-                        context_part += f"Section: {result.heading}\n"
-                    context_part += f"Content: {partial_text}...\n\n"
-                    context_parts.append(context_part)
-                truncated = True
-                break
-            context_parts.append(context_part)
-            current_size += len(context_part)
-        context_string = "".join(context_parts)
-        context_hash = hashlib.md5(context_string.encode()).hexdigest()
-        return context_string, context_hash
+    def _prepare_context(
+        self, retrieval_results: List
+    ) -> Tuple[str, Dict[int, int], str]:
+        """
+        Returns:
+            context_string   : numbered text for the LLM prompt
+            index_to_page    : {source_idx : page_number} for footnotes
+            context_hash     : hash for caching
+        """
+        snippets = []
+        index_to_page = {}          # 1-based index → page
+
+        for idx, res in enumerate(retrieval_results, 1):
+            index_to_page[idx] = res.page_number
+            snippets.append(f"[{idx}] {res.text.strip()}")
+
+        context_str = "\n\n".join(snippets)
+        context_hash = hashlib.md5(context_str.encode()).hexdigest()
+        return context_str, index_to_page, context_hash
+
+    def _make_clickable(self, index_to_page: Dict[int, int]) -> str:
+        """Make references clickable links to the PDF viewer."""
+        
+        # Use settings for PDF path and file name
+        pdf_path = str(settings.raw_pdf_dir / "constitution-1973.pdf")
+        pdf_file = os.path.basename(pdf_path)
+        base_url = "http://localhost:8000"
+        refs = [
+            f'<a href="{base_url}/{pdf_file}#page={p}" target="_blank">{i}</a>'
+            for i, p in sorted(index_to_page.items())
+        ]
+        return "<br><b>References:</b> " + ", ".join(refs)
 
     def _invoke_with_retry(self, input_data: Dict[str, str]) -> str:
         last_exception = None
@@ -231,23 +218,36 @@ class Generator:
         raise ModelError(f"Request failed after 3 attempts: {str(last_exception)}")
 
     def generate_response(self, query: str, retrieval_results: List) -> str:
+        """
+        Generate a response with numbered citations and clickable footnotes.
+        """
         if not retrieval_results:
             return "I couldn't find relevant information in the Pakistan Constitution database to answer your question."
-        context, context_hash = self._prepare_context(retrieval_results)
+
+        context_str, index_to_page, context_hash = self._prepare_context(retrieval_results)
+
         cached_response = self.cache.get(query, context_hash)
         if cached_response:
             return cached_response
+        
         input_data = {
-            "context": context,
+            "context": context_str,
             "question": query
         }
+
         try:
-            response = self._invoke_with_retry(input_data)
-            self.cache.set(query, context_hash, response)
-            return response
+            answer = self._invoke_with_retry(input_data)
         except (TimeoutError, ConnectionError, ModelError) as e:
             logger.error(f"Error generating response: {str(e)}")
             return f"I apologize, but I encountered an error while generating the response: {str(e)}. Please try again."
         except Exception as e:
             logger.error(f"Unexpected error generating response: {str(e)}")
             return "I apologize, but I encountered an unexpected error while generating the response. Please try again."
+
+        # 4) Append clickable footnotes
+        footnotes = self._make_clickable(index_to_page)
+        full_answer = answer + footnotes
+
+        # 5) Cache
+        self.cache.set(query, context_hash, full_answer)
+        return full_answer

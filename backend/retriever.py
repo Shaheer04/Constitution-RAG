@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from enum import Enum
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
 import torch
-from langchain.retrievers import BM25Retriever
+from langchain_community.retrievers import BM25Retriever
 from langchain.schema import Document
 import re
 import nltk
@@ -377,10 +377,13 @@ class Retriever:
         
         # Adaptive weights based on query type
         if query_type == 'factual':
-            similarity_weight, keyword_weight = 0.8, 0.2
+            print(f"Query type identified as: {query_type}")
+            similarity_weight, keyword_weight = 0.6, 0.4
         elif query_type == 'procedural':
+            print(f"Query type identified as: {query_type}")
             similarity_weight, keyword_weight = 0.6, 0.4
         elif query_type == 'interpretive':
+            print(f"Query type identified as: {query_type}")
             similarity_weight, keyword_weight = 0.7, 0.3
         else:
             similarity_weight, keyword_weight = 0.7, 0.3
@@ -492,3 +495,21 @@ class Retriever:
                 similarity_weight * norm_similarity + 
                 keyword_weight * norm_keyword
             )
+
+
+if __name__ == "__main__":
+    # Testing the Retriever
+    print("Starting retrieval...")
+    retriever = Retriever()
+    query = "How does the Constitution ensure judicial independence?"
+    results = retriever.adaptive_hybrid_retrieve(query, n_results=5)
+    
+    for result in results:
+        print(f"Text: {result.text[:100]}... | Score: {result.final_score:.4f} | Page: {result.page_number}")
+        
+    # Uncomment below to test ChromaDB document retrieval
+    #cdb = ChromaDBManager(str(settings.chroma_dir), settings.collection_name)
+    #all_docs = cdb.get_all_documents()
+    #for idx, doc in enumerate(all_docs["documents"]):
+        #if "Article 19" in doc:           # or any clause you expect
+            #print(idx, doc[:200])

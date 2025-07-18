@@ -24,7 +24,7 @@ class Settings(BaseSettings):
 
     chunk_max_tokens: int = Field(default=256)
     chunk_overlap_ratio: float = Field(default=0.1)
-    ollama_model: str = Field(default="llama3.2", description="Ollama model name")
+    ollama_model: str = Field(default="llama3.1", description="Ollama model name")
     ollama_url: str = Field( description="Ollama server URL")
 
     class Config:
